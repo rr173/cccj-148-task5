@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>冷藏箱岸电接入与断电迁移操作台</title>
+<style>
+  :root { --bd:#d4dae2; --bg:#f5f7fa; --ok:#1a7f37; --warn:#b45309;
+          --bad:#b42318; --trip:#b42318; --info:#1d4ed8; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:13px/1.5 -apple-system,"Segoe UI","PingFang SC",
+         "Microsoft YaHei",sans-serif; background:var(--bg); color:#1f2937; }
+  header { background:#0f2742; color:#fff; padding:10px 16px; display:flex;
+           gap:14px; align-items:center; flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; font-weight:600; }
+  header .stat { font-size:12px; opacity:.9; }
+  header button, .btn { font:inherit; }
+  .wrap { padding:12px 16px; display:grid; gap:12px;
+          grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .card { background:#fff; border:1px solid var(--bd); border-radius:8px;
+          overflow:hidden; }
+  .card.wide { grid-column:1 / -1; }
+  .card h2 { font-size:13px; margin:0; padding:8px 12px; background:#eef2f7;
+             border-bottom:1px solid var(--bd); display:flex;
+             justify-content:space-between; align-items:center; }
+  .card .body { padding:10px 12px; max-height:330px; overflow:auto; }
+  table { border-collapse:collapse; width:100%; font-size:12px; }
+  th,td { border:1px solid #e5e9ef; padding:3px 6px; text-align:left;
+          vertical-align:top; }
+  th { background:#f8fafc; position:sticky; top:0; }
+  tr.trip td { background:#fef3f2; }
+  .tag { display:inline-block; padding:0 6px; border-radius:10px;
+         font-size:11px; white-space:nowrap; }
+  .t-powered { background:#dcfce7; color:var(--ok); }
+  .t-reserved { background:#fef9c3; color:#a16207; }
+  .t-unplugged,.t-tripped { background:#fee2e2; color:var(--bad); }
+  .t-ok { background:#dbeafe; color:var(--info); }
+  .t-held { background:#ede9fe; color:#6d28d9; }
+  .t-free { background:#f1f5f9; color:#64748b; }
+  .bar { background:#e5e7eb; border-radius:4px; height:8px; width:90px;
+         display:inline-block; vertical-align:middle; overflow:hidden; }
+  .bar > i { display:block; height:100%; background:#3b82f6; }
+  .bar > i.hot { background:#ef4444; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  input,select,textarea,button { font:inherit; padding:4px 8px;
+         border:1px solid var(--bd); border-radius:5px; background:#fff; }
+  textarea { width:100%; height:120px; font-family:ui-monospace,Menlo,monospace;
+             font-size:12px; }
+  button.primary { background:#1d4ed8; color:#fff; border-color:#1d4ed8;
+                   cursor:pointer; }
+  button.primary:hover { background:#1e40af; }
+  button.warn { background:#b42318; color:#fff; border-color:#b42318;
+                cursor:pointer; }
+  button.ghost { background:#fff; cursor:pointer; }
+  .muted { color:#64748b; }
+  .mono { font-family:ui-monospace,Menlo,monospace; }
+  #log { font-family:ui-monospace,Menlo,monospace; font-size:11px;
+         white-space:pre-wrap; max-height:180px; overflow:auto;
+         background:#0b1220; color:#c7d2fe; padding:8px; border-radius:6px; }
+  .flash-good { color:var(--ok); } .flash-bad { color:var(--bad); }
+  details summary { cursor:pointer; font-weight:600; margin:4px 0; }
+  .stepbox { border:1px solid var(--bd); border-radius:6px; padding:6px 8px;
+             margin:6px 0; }
+  code.k { background:#f1f5f9; padding:0 4px; border-radius:3px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🧊 冷藏箱岸电接入与断电迁移操作台</h1>
+  <span class="stat" id="h-voyage"></span>
+  <span class="stat" id="h-counts"></span>
+  <span class="stat mono" id="h-seq"></span>
+  <label class="stat"><input type="checkbox" id="auto" checked> 2 秒自动刷新</label>
+  <button class="ghost" onclick="refresh()">刷新</button>
+  <button class="ghost" onclick="seedDemo()">一键装入演示航次</button>
+</header>
+
+<div class="wrap">
+
+  <div class="card">
+    <h2>① 配电拓扑 / 实时负载
+      <span class="muted" id="loads-at"></span></h2>
+    <div class="body" id="topology"></div>
+  </div>
+
+  <div class="card">
+    <h2>② 未接电 / 断电箱（保温时限）</h2>
+    <div class="body" id="unpowered"></div>
+  </div>
+
+  <div class="card">
+    <h2>③ 预留与接电终端</h2>
+    <div class="body">
+      <details open>
+        <summary>单个预留（箱号 + 插座号）</summary>
+        <div class="row" style="margin:6px 0">
+          <input id="r-box" placeholder="箱号 如 RFU1" style="width:110px">
+          <input id="r-sock" placeholder="插座 如 S1A" style="width:110px">
+          <input id="r-cmd" placeholder="命令标识(可选)" style="width:150px">
+          <button class="primary" onclick="reserve()">预留</button>
+          <button class="ghost" onclick="autoReserve()">按优先级批量预留</button>
+        </div>
+      </details>
+      <details open>
+        <summary>接电终端：箱号 + 插座号 + 命令标识 → 供电</summary>
+        <div class="row" style="margin:6px 0">
+          <input id="e-box" placeholder="箱号" style="width:110px">
+          <input id="e-sock" placeholder="插座号" style="width:110px">
+          <input id="e-cmd" placeholder="命令标识，如 CMD-001" style="width:170px">
+          <button class="primary" onclick="energize()">转为供电</button>
+          <button class="ghost" onclick="deenergize()">断电(回预留)</button>
+          <button class="ghost" onclick="releaseResv()">释放预留</button>
+        </div>
+        <div class="muted">相同命令标识重放首次答复；载荷不同则拒绝且不改接电状态。</div>
+      </details>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>④ 异常采样（超时钟偏差倒序 → 待审）</h2>
+    <div class="body" id="quarantine"></div>
+  </div>
+
+  <div class="card">
+    <h2>⑤ 跳闸登记与影响</h2>
+    <div class="body">
+      <div class="row" style="margin-bottom:6px">
+        <select id="trip-cid"></select>
+        <input id="trip-reason" placeholder="原因(可选)" style="width:160px">
+        <button class="warn" onclick="trip()">登记跳闸并冻结新接电</button>
+        <button class="ghost" onclick="resetCircuit()">回路复位</button>
+      </div>
+      <div id="trips"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>⑥ 迁移方案与逐步执行</h2>
+    <div class="body">
+      <div class="row" style="margin-bottom:6px">
+        <select id="mig-cid"></select>
+        <input id="mig-op" placeholder="电气员代号" value="ET-甲" style="width:110px">
+        <button class="primary" onclick="createMigration()">生成有序迁移方案（抢占目标）</button>
+      </div>
+      <div id="migrations"></div>
+    </div>
+  </div>
+
+  <div class="card wide">
+    <h2>⑦ 通用命令台（采样 / 自定义 JSON / 命令标识重放试验）</h2>
+    <div class="body">
+      <div class="row" style="margin-bottom:6px">
+        <strong>POST</strong>
+        <select id="api">
+          <option value="/reefer/samples">/reefer/samples</option>
+          <option value="/reefer/reservations">/reefer/reservations</option>
+          <option value="/reefer/energize">/reefer/energize</option>
+          <option value="/reefer/trips">/reefer/trips</option>
+          <option value="/reefer/migrations">/reefer/migrations</option>
+          <option value="/reefer/migrations/confirm">/reefer/migrations/confirm</option>
+          <option value="/reefer/topology">/reefer/topology</option>
+          <option value="/reefer/fleet">/reefer/fleet</option>
+        </select>
+        <button class="primary" onclick="submitRaw()">提交</button>
+        <span id="raw-status" class="muted"></span>
+      </div>
+      <textarea id="raw"></textarea>
+    </div>
+  </div>
+
+  <div class="card wide">
+    <h2>⑧ 事件流水（不可变） / 一致性自检</h2>
+    <div class="body">
+      <div class="row" style="margin-bottom:6px">
+        <button class="ghost" onclick="verify()">运行一致性自检</button>
+        <button class="ghost" onclick="refreshEvents()">刷新流水</button>
+        <span id="verify-out" class="muted"></span>
+      </div>
+      <div id="log"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let lastStatus = "";
+function esc(s){ return String(s ?? "").replace(/[&<>]/g, c =>
+  ({ "&":"&amp;","<":"&lt;",">":"&gt;" }[c])); }
+async function api(path, opts){
+  const r = await fetch(path, opts);
+  const j = await r.json();
+  return { status:r.status, j };
+}
+async function post(path, body){
+  const { status, j } = await api(path, {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify(body)});
+  line(`POST ${path} -> ${status} ${JSON.stringify(j)}`,
+       status < 300 ? "flash-good" : "flash-bad");
+  return { status, j };
+}
+function line(text, cls){
+  const d = document.createElement("div");
+  d.className = cls || ""; d.textContent = "› " + text;
+  $("raw-status").textContent = "";
+  const log = $("log"); log.prepend(d);
+  while (log.childNodes.length > 60) log.lastChild.remove();
+}
+
+function tag(cls, text){ return `<span class="tag ${cls}">${esc(text)}</span>`; }
+function bar(cur, max){
+  const pct = Math.max(0, Math.min(100, cur / max * 100));
+  return `<span class="bar"><i class="${pct>=90?'hot':''}" style="width:${pct}%"></i></span>`;
+}
+
+async function refresh(){
+  const [ov, ld, up, qr, tr, mg] = await Promise.all([
+    api("/reefer/overview").then(r=>r.j),
+    api("/reefer/loads").then(r=>r.j),
+    api("/reefer/unpowered").then(r=>r.j),
+    api("/reefer/quarantine").then(r=>r.j),
+    api("/reefer/trips").then(r=>r.j),
+    api("/reefer/migrations").then(r=>r.j),
+  ]);
+  $("h-voyage").textContent = ov.voyage
+    ? `航次 ${ov.voyage.voyage_id} · 允许时钟偏差 ${ov.voyage.clock_skew_sec}s`
+    : "（未登记拓扑）";
+  const c = ov.counts;
+  $("h-counts").innerHTML =
+    `供电 <b>${c.powered}</b> · 预留 ${c.reserved} · 拔除中 ${c.unplugged} · `+
+    `未接电 ${c.containers - c.powered - c.reserved - c.unplugged} · `+
+    `跳闸回路 ${c.tripped_circuits} · 待审样本 ${c.quarantine_open}`;
+  $("h-seq").textContent = "event seq " + ov.last_event_seq;
+
+  // 拓扑与负载
+  $("loads-at").textContent = ld.at;
+  $("topology").innerHTML = ld.circuits.map(c => `
+    <table style="margin-bottom:8px" class="${c.tripped?'trip':''}">
+      <thead><tr><th colspan="7">
+        回路 <code class="k">${esc(c.circuit_id)}</code> (${esc(c.board_id)})
+        ${c.phase} ${c.voltage}V · 额定 ${c.rating_a}A
+        ${c.tripped ? tag("t-tripped","已跳闸·冻结新接电"):tag("t-ok","正常")}
+        ${bar(c.committed_a, c.rating_a)}
+        承诺 ${c.committed_a}A（实测 ${c.measured_a}A，余量 ${c.spare_a}A）
+        <span class="muted">供 ${c.parts.powered} / 预留 ${c.parts.reserved} / 迁移保留 ${c.parts.held}</span>
+      </th></tr>
+      <tr><th>插座</th><th>相制</th><th>额定A</th><th>允许箱型</th>
+          <th>电缆可达</th><th>占用/保留</th><th>箱</th></tr></thead>
+      <tbody>${c.sockets.map(s => {
+        let occ = tag("t-free","空闲"), box = "";
+        if (s.lease) { occ = tag("t-"+s.lease.status,
+          {reserved:"已预留",powered:"供电中",unplugged:"拔除中"}[s.lease.status]);
+          box = `${esc(s.lease.box_id)} (${s.lease.demand_a}A)`;
+        } else if (s.held_by) {
+          occ = tag("t-held","迁移保留");
+          box = `→ ${esc(s.held_by.box_id)} (${esc(s.held_by.plan_id)})`;
+        }
+        return `<tr><td><code class="k">${esc(s.socket_id)}</code></td>
+          <td>${esc(s.phase)} ${esc(s.voltage)}V</td><td>${s.rated_a}</td>
+          <td>${(s.allowed_types||[]).map(esc).join(",")||"*"}</td>
+          <td>${(s.reach_zones||[]).map(esc).join(",")||"*"}</td>
+          <td>${occ}</td><td>${box}</td></tr>`;
+      }).join("")}</tbody></table>`).join("") || "<span class=muted>暂无拓扑</span>";
+
+  // 未接电箱
+  $("unpowered").innerHTML = up.boxes.length ? `<table>
+    <thead><tr><th>箱</th><th>型</th><th>相制</th><th>需求A</th><th>优先级</th>
+      <th>插座</th><th>租约</th><th>断电起</th><th>剩余保温(h)</th></tr></thead>
+    <tbody>${up.boxes.map(b=>`<tr>
+      <td><code class="k">${esc(b.box_id)}</code></td><td>${esc(b.type)}</td>
+      <td>${esc(b.phase)}</td><td>${b.demand_a}</td><td>${b.priority}</td>
+      <td>${esc(b.socket_id||"—")}</td>
+      <td>${b.lease_status?tag("t-"+b.lease_status,b.lease_status):"—"}</td>
+      <td class="mono">${esc((b.unpowered_since||"").replace("T"," ").slice(0,19))}</td>
+      <td><b style="color:${b.remaining_insulation_hours<1?'var(--bad)':'inherit'}">${
+        Number.isFinite(b.remaining_insulation_hours)
+          ? b.remaining_insulation_hours : "∞"}</b></td></tr>`).join("")}
+    </tbody></table>` : "<span class=muted>全部箱已供电 🎉</span>";
+
+  // 待审
+  $("quarantine").innerHTML = qr.samples.length ? `<table>
+    <thead><tr><th>待审号</th><th>箱</th><th>类型</th><th>值</th>
+      <th>测量时刻</th><th>传感器</th><th>原因</th><th></th></tr></thead>
+    <tbody>${qr.samples.map(q=>`<tr>
+      <td>${esc(q.qid)}</td><td>${esc(q.box_id)}</td><td>${esc(q.kind)}</td>
+      <td>${esc(q.value)}</td><td class="mono">${esc(q.at)}</td>
+      <td>${esc(q.sensor)}</td>
+      <td>${tag("t-unplugged",q.reason==="clock_out_of_order"?"倒序超偏差":"重复")}</td>
+      <td><button class="ghost" onclick="review('${q.qid}','accept')">采纳</button>
+          <button class="ghost" onclick="review('${q.qid}','reject')">驳回</button></td>
+      </tr>`).join("")}</tbody></table>` : "<span class=muted>无待审样本</span>";
+
+  // 跳闸
+  const cids = ld.circuits.map(c=>c.circuit_id);
+  $("trip-cid").innerHTML = cids.map(x=>`<option>${esc(x)}</option>`).join("");
+  $("mig-cid").innerHTML = tr.trips.map(t=>`<option>${esc(t.circuit_id)}</option>`).join("");
+  $("trips").innerHTML = tr.trips.length ? tr.trips.map(t=>`
+    <div class="stepbox ${'trip'}">
+      <b>${esc(t.circuit_id)}</b> 跳闸于 <span class="mono">${esc(t.tripped_at)}</span>
+      — ${t.affected_boxes.length} 个箱受影响：
+      <table><thead><tr><th>箱</th><th>原插座</th><th>租约</th><th>优先级</th>
+        <th>剩余保温(h)</th></tr></thead><tbody>
+      ${t.affected_boxes.map(b=>`<tr><td>${esc(b.box_id)}</td>
+        <td>${esc(b.socket_id)}</td>
+        <td>${tag("t-"+b.lease_status,b.lease_status)}</td>
+        <td>${b.priority}</td><td><b>${b.remaining_insulation_hours}</b></td></tr>`).join("")}
+      </tbody></table></div>`).join("") : "<span class=muted>当前无跳闸回路</span>";
+
+  // 迁移
+  $("migrations").innerHTML = mg.plans.length ? mg.plans.map(p=>`
+    <div class="stepbox">
+      <b>${esc(p.plan_id)}</b> · 回路 ${esc(p.circuit_id)}
+      ${tag(p.status==="completed"?"t-powered":"t-"+(p.status==="cancelled"?"unplugged":"held"),
+            {pending:"执行中",completed:"已完成",cancelled:"已取消"}[p.status])}
+      <span class="muted">by ${esc(p.created_by||"")} @ ${esc(p.created_at)}</span>
+      ${p.status==="pending"
+        ? `<button class="warn" style="float:right" onclick="cancelPlan('${p.plan_id}')">取消方案(释放未执行步骤)</button>`:""}
+      <table style="margin-top:4px"><thead><tr><th>#</th><th>箱(优先级)</th>
+        <th>原插座</th><th>目标</th><th>需求A</th><th>状态</th><th>操作</th></tr></thead>
+      <tbody>${p.steps.map(s=>`<tr>
+        <td>${s.order}</td><td>${esc(s.box_id)} (${s.priority})</td>
+        <td>${esc(s.from_socket)}</td><td><code class="k">${esc(s.to_socket)}</code></td>
+        <td>${s.demand_a}</td><td>${tag(
+          s.status==="energized"?"t-powered":"t-"+(s.status==="cancelled"?"free":s.status==="pending"?"held":"unplugged"),
+          {pending:"待执行",unplugged:"已拔除",target_occupied:"目标已占用",
+           energized:"已送电",cancelled:"已取消"}[s.status])}</td>
+        <td>${stepButtons(p.plan_id, s.step_id, s.status, p.status)}</td></tr>`).join("")}
+      </tbody></table></div>`).join("") : "<span class=muted>暂无迁移方案</span>";
+}
+
+function stepButtons(plan, step, status, planStatus){
+  if (planStatus !== "pending") return "—";
+  const b = (act,label,cls) =>
+    `<button class="${cls}" onclick="confirmStep('${plan}','${step}','${act}')">${label}</button>`;
+  if (status==="pending") return b("unplug","① 确认拔除","primary");
+  if (status==="unplugged") return b("occupy","② 占用目标插座","primary");
+  if (status==="target_occupied") return b("energize","③ 重新送电","warn");
+  return "✓";
+}
+
+async function reserve(){
+  await post("/reefer/reservations", {box_id:$("r-box").value.trim(),
+    socket_id:$("r-sock").value.trim(),
+    ...($("r-cmd").value.trim()?{command_id:$("r-cmd").value.trim()}:{})});
+  refresh();
+}
+async function autoReserve(){
+  await post("/reefer/reservations/auto", {}); refresh();
+}
+async function energize(){
+  await post("/reefer/energize", {box_id:$("e-box").value.trim(),
+    socket_id:$("e-sock").value.trim(), command_id:$("e-cmd").value.trim()});
+  refresh();
+}
+async function deenergize(){
+  await post("/reefer/deenergize", {box_id:$("e-box").value.trim(),
+    socket_id:$("e-sock").value.trim()}); refresh();
+}
+async function releaseResv(){
+  await post("/reefer/reservations/release",
+    {box_id:$("e-box").value.trim()}); refresh();
+}
+async function review(qid, decision){
+  await post("/reefer/samples/review", {qid, decision, operator:"console"});
+  refresh();
+}
+async function trip(){
+  await post("/reefer/trips", {circuit_id:$("trip-cid").value,
+    reason:$("trip-reason").value.trim()}); refresh();
+}
+async function resetCircuit(){
+  await post("/reefer/reset", {circuit_id:$("trip-cid").value}); refresh();
+}
+async function createMigration(){
+  await post("/reefer/migrations", {circuit_id:$("mig-cid").value,
+    operator:$("mig-op").value}); refresh();
+}
+async function confirmStep(plan, step, action){
+  await post("/reefer/migrations/confirm", {plan_id:plan, step_id:step,
+    action, operator:$("mig-op").value}); refresh();
+}
+async function cancelPlan(plan){
+  await post("/reefer/migrations/cancel", {plan_id:plan}); refresh();
+}
+async function submitRaw(){
+  let body;
+  try { body = JSON.parse($("raw").value || "{}"); }
+  catch(e){ line("JSON 解析失败: "+e, "flash-bad"); return; }
+  await post($("api").value, body); refresh();
+}
+async function verify(){
+  const { j } = await api("/reefer/verify");
+  $("verify-out").innerHTML = j.ok
+    ? `<span class="flash-good">✔ 不变量全部通过 (seq ${j.event_seq}, 租约 ${j.leases}, 保留 ${j.holds})</span>`
+    : `<span class="flash-bad">✘ ${j.problems.map(esc).join("；")}</span>`;
+}
+async function refreshEvents(){
+  const { j } = await api("/reefer/events");
+  $("log").innerHTML = j.events.map(e =>
+    `<div>${String(e.seq).padStart(4," ")} ${esc(e.at.slice(11,19))} `+
+    `<b>${esc(e.kind)}</b> ${esc(JSON.stringify(e.payload))}</div>`).join("");
+}
+async function seedDemo(){
+  const body = JSON.parse(document.getElementById("demo-payload").textContent);
+  const r1 = await post("/reefer/topology", body.topology);
+  const r2 = await post("/reefer/fleet", body.fleet);
+  if (r1.status < 300) $("raw").value = JSON.stringify(body.samples, null, 2);
+  await post("/reefer/reservations/auto", {});
+  refresh();
+}
+
+document.getElementById("demo-payload")?.remove();
+setInterval(()=>{ if($("auto").checked) refresh(); }, 2000);
+refresh();
+</script>
+
+<script type="application/json" id="demo-payload">
+{
+  "topology": {
+    "voyage_id": "V-2026-09W", "clock_skew_sec": 30,
+    "boards": [{"id":"MSB-1","name":"主配电板1号"}],
+    "circuits": [
+      {"id":"C1","board_id":"MSB-1","phase":"3P","voltage":440,"rating_a":120},
+      {"id":"C2","board_id":"MSB-1","phase":"3P","voltage":440,"rating_a":90},
+      {"id":"C3","board_id":"MSB-1","phase":"1P","voltage":220,"rating_a":60}
+    ],
+    "sockets": [
+      {"id":"S1A","circuit_id":"C1","phase":"3P","voltage":440,"rated_a":40,
+       "allowed_types":["RF"],"reach_zones":["Z1","Z2"]},
+      {"id":"S1B","circuit_id":"C1","phase":"3P","voltage":440,"rated_a":40,
+       "allowed_types":["RF"],"reach_zones":["Z2","Z3"]},
+      {"id":"S1C","circuit_id":"C1","phase":"3P","voltage":440,"rated_a":40,
+       "allowed_types":["RF"],"reach_zones":["Z3"]},
+      {"id":"S2A","circuit_id":"C2","phase":"3P","voltage":440,"rated_a":40,
+       "allowed_types":["RF"],"reach_zones":["Z1","Z4"]},
+      {"id":"S2B","circuit_id":"C2","phase":"3P","voltage":440,"rated_a":40,
+       "allowed_types":["RF"],"reach_zones":["Z4","Z5"]},
+      {"id":"S3A","circuit_id":"C3","phase":"1P","voltage":220,"rated_a":30,
+       "allowed_types":["RF"],"reach_zones":["Z1"]}
+    ]
+  },
+  "fleet": {"containers": [
+    {"id":"RFU1","type":"RF","phase":"3P","voltage":440,"rated_a":32,
+     "demand_a":32,"priority":9,"zones":["Z1"],"hold_hours":4},
+    {"id":"RFU2","type":"RF","phase":"3P","voltage":440,"rated_a":32,
+     "demand_a":32,"priority":5,"zones":["Z2"],"hold_hours":6},
+    {"id":"RFU3","type":"RF","phase":"3P","voltage":440,"rated_a":30,
+     "demand_a":30,"priority":1,"zones":["Z3"],"hold_hours":8},
+    {"id":"RFU4","type":"RF","phase":"1P","voltage":220,"rated_a":20,
+     "demand_a":20,"priority":7,"zones":["Z1"],"hold_hours":5}
+  ]},
+  "samples": {"samples": [
+    {"box_id":"RFU1","kind":"temp","value":-18.2,
+     "sensor":"SN-1","measured_at":"2026-09-29T10:00:00+00:00"}
+  ]}
+}
+</script>
+</body>
+</html>
